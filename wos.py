@@ -1,7 +1,5 @@
 from suds.client import Client
-import sys, urllib
-#import base64
-#import logging
+import sys, urllib, json, csv
 
 try:
   from lxml import etree
@@ -29,21 +27,10 @@ except ImportError:
         except ImportError:
           print("Failed to import ElementTree from any known place")
 
-#logging.basicConfig(level=logging.INFO)
-#logging.getLogger('suds.client').setLevel(logging.DEBUG)
 
 def wos_client():
 
     url_auth = 'http://search.webofknowledge.com/esti/wokmws/ws/WOKMWSAuthenticate?wsdl'
-
-   # username = 'xxxx'
-   # password = 'xxxx'
-
-   # base64string = base64.encodestring('%s:%s' % (username, password)).replace('\n','')
-   # authenticationHeader = {
-   #     'Authorization' : 'Basic %s' % base64string
-   # }
-
     client_auth=Client(url_auth, username='xxxx', password='xxxx')
    # client_auth = Client(url_auth, headers=authenticationHeader)
     cookie = client_auth.service.authenticate()
@@ -76,136 +63,210 @@ def wos_retrieve(first, record_num):
     return client.service.retrieve('1', retrieveParameters)
 
 
-def wos_transform(results, keep_path, discard_path):
+def wos_transform(results):
     
     xml = etree.XML(results)
     records = xml.findall('*//records')
-
-    xslt = etree.XML('''\
-    <xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0">
-        <xsl:output method="xml" indent="yes" encoding="UTF-8"/>
-        <xsl:template match="text()"/>
-        <xsl:template match="/">
-            <dublin_core schema="dc">
-                <xsl:apply-templates/>
-            </dublin_core>
-        </xsl:template>
-
-        <xsl:template match="uid">
-            <dcvalue element='identifier' qualifier='uid'>
-                <xsl:value-of select="."/>
-            </dcvalue>
-        </xsl:template>
-
-        <xsl:template match="/records/title">
-            <dcvalue element="title" qualifier="none" language="en_US">
-                <xsl:value-of select="./value"/>
-            </dcvalue>
-        </xsl:template>
-
-        <xsl:template match="/records/authors">
-            <xsl:for-each select="./value">
-                <dcvalue element="contributor" qualifier="author">
-                    <xsl:value-of select="."/>
-                </dcvalue>
-            </xsl:for-each>
-        </xsl:template>
-
-        <xsl:template match="/records/keywords">
-            <xsl:for-each select="./value">
-                <dcvalue element="subject" qualifier="none" language="en_US">
-                    <xsl:value-of select="."/>
-                </dcvalue>
-            </xsl:for-each>
-        </xsl:template>
-
-        <xsl:template match="/records/source">
-            <xsl:if test="./label='Published.BiblioYear'">
-                <dcvalue element="date" qualifier="issued">
-                    <xsl:value-of select="./value"/>
-                </dcvalue>
-            </xsl:if>
-        </xsl:template>
-
-        <xsl:template match="/records/other">
-            <xsl:if test="./label='Identifier.Xref_Doi'">
-                <dcvalue element="identifier" qualifier="doi">
-                    <xsl:value-of select="./value"/>
-                </dcvalue>
-            </xsl:if>
-            <xsl:if test="./label='Identifier.Issn'">
-                <dcvalue element="identifier" qualifier="issn">
-                    <xsl:value-of select="./value"/>
-                </dcvalue>
-            </xsl:if>
-        </xsl:template>
-
-    </xsl:stylesheet>''')
-
-    transform = etree.XSLT(xslt)
-
-    romeo_dict = {}
+    
+    p = []
+    t = []
     
     for record in records:
-           
-        dc = transform(record)
-
-
-        issn_list = dc.xpath('/dublin_core/dcvalue[@element="identifier"][@qualifier="issn"]/text()')
-
-        if issn_list:
-            
-            issn = issn_list[0]
-            romeo_query = urllib.urlopen('http://www.sherpa.ac.uk/romeo/api29.php?issn=%s' % issn)
-            romeo_string = romeo_query.read()
-            romeo_tree = etree.fromstring(romeo_string)
-            romeo = romeo_tree.xpath('/romeoapi/publishers/publisher/romeocolour/text()="green"')
-            romeo_result = romeo_tree.xpath('/romeoapi/publishers/publisher/romeocolour/text()')
-
+        
+        if record.xpath('title/value/text()'):
+            title = record.xpath('title/value/text()')[0]
         else:
+            title = ''
+        if record.xpath('doctype/value/text()'):
+            docType = record.xpath('doctype/value/text()')[0]
+        else:
+            docType = ''
+        if record.xpath('source[label="SourceTitle"]/value/text()'):
+            journal = record.xpath('source[label="SourceTitle"]/value/text()')[0]
+        else:
+            journal = ''
+        if record.xpath('source[label="Volume"]/value/text()'):
+            volume = record.xpath('source[label="Volume"]/value/text()')[0]
+        else:
+            volume = ''
+        if record.xpath('source[label="Issue"]/value/text()'):
+            issue = record.xpath('source[label="Issue"]/value/text()')[0]
+        else:
+            issue = ''
+        if record.xpath('source[label="Pages"]/value/text()'):
+            pages = record.xpath('source[label="Pages"]/value/text()')[0]
+        else:
+            pages = ''
+        if record.xpath('source[label="Published.BiblioYear"]/value/text()'):
+            year = record.xpath('source[label="Published.BiblioYear"]/value/text()')[0]
+        else:
+            year = ''
+        if record.xpath('source[label="Published.BiblioDate"]/value/text()'):
+            date = record.xpath('source[label="Published.BiblioDate"]/value/text()')[0]
+        else:
+            date = ''
+            
+        author = ''
+        if record.xpath('authors/value/text()'):
+            authors = record.xpath('authors/value/text()')
+            if len(authors) > 1:
+                if len(authors) < 5:
+                    for au in authors[:-1]:
+                        author+= au + "||"
+                    author+=authors[-1]
+                else:
+                    for au in authors[:4]:
+                        author+= au + "||"
+                    author+=authors[-1] + " + %s others" % len(authors)
+                    
+            else:
+                author+=record.xpath('authors/value/text()')[0]
+                
+        keyword = ''
+        if record.xpath('keywords/value/text()'):
+            keywords = record.xpath('keywords/value/text()')
+            if len(keywords) > 1:
+                for key in keywords[:-1]:
+                    keyword+= key + "||"
+                keyword+=keywords[-1]
+            else:
+                keyword+=record.xpath('keywords/value/text()')[0]
+
+        if record.xpath('other[label="Identifier.Issn"]/value/text()'):
+            issn = record.xpath('other[label="Identifier.Issn"]/value/text()')[0]
+        else:
+            issn = ''
+        if record.xpath('other[label="Identifier.Eissn"]/value/text()'):
+            eissn = record.xpath('other[label="Identifier.Eissn"]/value/text()')[0]
+        else:
+            eissn = ''
+        if record.xpath('other[label="Identifier.Ids"]/value/text()'):
+            ids = record.xpath('other[label="Identifier.Ids"]/value/text()')[0]
+        else:
+            ids = ''
+        if record.xpath('other[label="Identifier.Doi"]/value/text()'):
+            doi = record.xpath('other[label="Identifier.Doi"]/value/text()')[0]
+        else:
+            doi = ''
+        if record.xpath('uid/text()'):
+            uid = record.xpath('uid/text()')[0]
+        else:
+            uid = ''
+        if record.xpath('other[label="Identifier.Xref_Doi"]/value/text()'):
+            xref_doi = record.xpath('other[label="Identifier.Xref_Doi"]/value/text()')[0]
+        else:
+            xref_doi = ''
+        
+        t.append([title, docType, journal, volume, issue, pages, year, date, author, keyword, issn, eissn, ids, doi, uid, xref_doi])
+        
+        print issn
+        
+        if issn:
+            
+            key='xxx'
+    
+            romeo = json.load(urllib.urlopen('https://v2.sherpa.ac.uk/cgi/retrieve/cgi/retrieve?item-type=publication&api-key=%s&format=Json&filter=[["issn","equals","%s"]]' % (key, issn)))
+            
+            if romeo['items']:
+                if 'permitted_oa' in romeo['items'][0]['publisher_policy'][0]:
+                    
+                    version = []
+                    
+                    for i in romeo['items'][0]['publisher_policy'][0]['permitted_oa']:
+                        if ('institutional_repository' or 'non_commercial_institutional_repository' in i['location']['location']):
+                            version.append("%s|%s" % (i['article_version'], i['additional_oa_fee']))
+                    
+                    if 'published|no' in version:
+                        for i in romeo['items'][0]['publisher_policy'][0]['permitted_oa']:                           
+                            if ('institutional_repository' or 'non_commercial_institutional_repository' in i['location']['location']) and ('published' in i['article_version']):
+                                version = 'published'
+                                if 'no' in i['additional_oa_fee']:
+                                    fee = 'no'
+                                else:
+                                    fee = 'yes'
+                                embargo = ''
+                                if 'embargo' in i:
+                                    embargo = "%s %s" % (i['embargo']['amount'], i['embargo']['units'])
+                                condition = ''
+                                if 'conditions' in i:
+                                    conditions = i['conditions']
+                                    if len(conditions) > 1:
+                                        for c in conditions[:-1]:
+                                            condition+= c + "||"
+                                        condition+=conditions[-1]
+                                    else:
+                                        condition+=conditions[0]
+                                licenseCode = ''
+                                if 'license' in i:
+                                    licenseCode = i['license'][0]['license']
+                                p.append([title, docType, journal, volume, issue, pages, year, date, author, keyword, issn, eissn, ids, doi, uid, xref_doi, condition, embargo, fee, licenseCode, version])
+                    else:
+                        for i in romeo['items'][0]['publisher_policy'][0]['permitted_oa']:
+                            if ('institutional_repository' or 'non_commercial_institutional_repository' in i['location']['location']):
+                                if 'published' in i['article_version']:
+                                    version = 'published'
+                                if 'accepted' in i['article_version']:
+                                    version = 'accepted'
+                                if 'submitted' in i['article_version']:
+                                    version = 'submitted'
+                                if 'no' in i['additional_oa_fee']:
+                                    fee = 'no'
+                                else:
+                                    fee = 'yes'
+                                embargo = ''
+                                if 'embargo' in i:
+                                    embargo = "%s %s" % (i['embargo']['amount'], i['embargo']['units'])
+                                condition = ''
+                                if 'conditions' in i:
+                                    conditions = i['conditions']
+                                    if len(conditions) > 1:
+                                        for c in conditions[:-1]:
+                                            condition+= c + "||"
+                                        condition+=conditions[-1]
+                                    else:
+                                        condition+=conditions[0]
+                                licenseCode = ''
+                                if 'license' in i:
+                                    licenseCode = i['license'][0]['license']
+                                p.append([title, docType, journal, volume, issue, pages, year, date, author, keyword, issn, eissn, ids, doi, uid, xref_doi, condition, embargo, fee, licenseCode, version])
+                    
+                else:
+                    print "No policy!!"
+                    condition = ''
+                    embargo = ''
+                    fee = ''
+                    version = 'no policy'
+                    licenseCode = ''
+                    p.append([title, docType, journal, volume, issue, pages, year, date, author, keyword, issn, eissn, ids, doi, uid, xref_doi, condition, embargo, fee, licenseCode, version])
+        else:
+            print "ISSN not found!!"
+            condition = ''
+            embargo = ''
+            fee = ''
+            version = 'no policy'
+            licenseCode = ''
+            p.append([title, docType, journal, volume, issue, pages, year, date, author, keyword, issn, eissn, ids, doi, uid, xref_doi, condition, embargo, fee, licenseCode, version])
             continue
-
-        uid_list = dc.xpath('/dublin_core/dcvalue[@element="identifier"][@qualifier="uid"]/text()')
-        uid = uid_list[0]
-
-        romeo_dict[uid]=romeo_result
-
-        if romeo is True:
-            
-            tmp = file('%s/%s.xml' % (keep_path, uid), 'w')
-            string = etree.tostring(dc)
-            tmp.write(string)
-            tmp.close()
-            
-        elif romeo is False or not issn_list:
-            
-            tmp = file('%s/%s.xml' % (discard_path, uid), 'w')
-            string = etree.tostring(dc)
-            tmp.write(string)
-            tmp.close()
-
-    print romeo_dict
-            
-    #for x, y in romeo_dict.iteritems():
- #       with open ('%s/romeo.txt' % keep_path, 'a') as f:
- #           f.write(x)
- #           f.write(y)
+    return p, t
 
 def main(argv):
             
     query = input('Enter your query: ')
     record_num = input('How many records do you want to retrieve? ')
-    keep_path = input ('Where do you want to save your green records? ')
-    discard_path = input ('Where do you want to save your not-green records? ')
 
     results = wos_query(query, record_num)
 
     if not results:
         print("Failed to retrieve records from Web of Science")
         return 1
-
+    
+    published= []
+    tracking = []
+    
     try:
-        wos_transform(results, keep_path, discard_path)
+        p, t = wos_transform(results)
+        published.append(p)
+        tracking.append(t)
         print("First pass complete.")
     except:
         print("Transform failed on first pass.")
@@ -228,7 +289,9 @@ def main(argv):
 
         results = wos_retrieve(first, record_num)
 
-        wos_transform(results, keep_path, discard_path)
+        p, t = wos_transform(results)
+        published.append(p)
+        tracking.append(t)
         print("Pass #%s complete." % pass_num)
 
         first += record_num
@@ -237,6 +300,29 @@ def main(argv):
 
     else:
         print("Done.")
+        
+    published_final = []
+    
+    for pb in published:
+        if pb not in published_final:
+            published_final.append(pb)
+    print published_final
+    
+    with open("C:/Users/Matt/Documents/wos_2019.csv", 'wb') as csvfile_published:
+        csvwriter_published = csv.writer(csvfile_published, delimiter=',', quotechar='"')
+        for r in published_final:
+            csvwriter_published.writerows(r)
+    
+    tracking_final = []
+    
+    for tr in tracking:
+        if tr not in tracking_final:
+            tracking_final.append(tr)
+    
+    with open("C:/Users/Matt/Documents/wos_tracking_2019.csv", 'wb') as csvfile_tracking:
+        csvwriter_tracking = csv.writer(csvfile_tracking, delimiter=',', quotechar='"')
+        for r in tracking_final:
+            csvwriter_tracking.writerows(r)
 
     
 if __name__ == '__main__':
